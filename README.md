@@ -1,8 +1,19 @@
-# serverless-gym-booker
+# GymClassBooker
 
-Serverless gym-class booker: a Telegram bot (with a natural-language layer)
-that schedules a booking for the exact moment the class's booking window
-opens, and reports the result back on Telegram.
+The class you want fills up minutes after booking opens, and you are never at
+your phone at that exact moment. GymClassBooker is.
+
+Message a Telegram bot what you want ("book spinning tomorrow at 7"), pick a
+class, and walk away. At the exact second the booking window opens, a Lambda
+function books it for you, then tells you whether you got in.
+
+- **Chat, don't click:** plain-language requests or simple commands, in Telegram.
+- **Exact timing:** a one-time schedule wakes the booker just before the window
+  opens, and it waits for the precise instant instead of guessing.
+- **Shareable:** an admin approves who can use the bot; each user links their own
+  account, and credentials are stored in AWS Secrets Manager.
+- **Nothing to babysit:** fully serverless, pay-per-use, no server to keep
+  running; one command deploys it and one command removes it.
 
 > Personal project, not affiliated with or endorsed by any gym or fitness
 > company. It talks to a booking API using your own account credentials and
