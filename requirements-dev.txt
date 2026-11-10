@@ -1,0 +1,4 @@
+requests==2.34.2
+boto3
+pytest
+pytest-cov

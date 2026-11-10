@@ -1,0 +1,29 @@
+# Virtualenv and tool caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Credentials and local config: never commit
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+*.key
+config/local*.json
+
+# SAM / CloudFormation build artifacts and local deploy config
+.aws-sam/
+samconfig.toml
+samconfig.yaml
+
+# Captured API traffic contains real tokens and credentials
+*.har
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
