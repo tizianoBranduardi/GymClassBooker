@@ -1,19 +1,29 @@
 # GymClassBooker
 
-The class you want fills up minutes after booking opens, and you are never at
-your phone at that exact moment. GymClassBooker is.
+**A serverless Telegram bot that books gym classes at the exact second the booking window opens, so you don't have to be awake, online or fast.**
 
-Message a Telegram bot what you want ("book spinning tomorrow at 7"), pick a
-class, and walk away. At the exact second the booking window opens, a Lambda
-function books it for you, then tells you whether you got in.
+## The problem
 
-- **Chat, don't click:** plain-language requests or simple commands, in Telegram.
-- **Exact timing:** a one-time schedule wakes the booker just before the window
-  opens, and it waits for the precise instant instead of guessing.
-- **Shareable:** an admin approves who can use the bot; each user links their own
-  account, and credentials are stored in AWS Secrets Manager.
-- **Nothing to babysit:** fully serverless, pay-per-use, no server to keep
-  running; one command deploys it and one command removes it.
+Popular classes fill up within minutes of the booking window opening, and the
+window opens at a precise time that depends on the class: 48 hours before the
+start for regular members, longer for priority members. Doing it by hand means
+being at your phone at the right second. This project started as a Python
+script on a Raspberry Pi triggered by cron, which worked but needed SSH access
+and a machine at home. GymClassBooker is the same idea rebuilt as a managed,
+shareable, serverless service.
+
+## The solution
+
+1. You message a Telegram bot, with plain language ("book spinning tomorrow at 7")
+   or commands (`/search 2026-11-12 18:00`).
+2. The bot searches the classes, you pick one, and it asks you to confirm.
+3. A one-time schedule is created for just before the booking window opens.
+4. At that moment a Lambda function logs in, waits for the exact instant, books
+   the class (retrying briefly if the server's clock is slightly behind), and
+   reports the outcome on Telegram.
+
+Several people can use one deployment: an admin approves each user, and every
+user links their own account.
 
 > Personal project, not affiliated with or endorsed by any gym or fitness
 > company. It talks to a booking API using your own account credentials and
@@ -31,25 +41,73 @@ You (Telegram) ─► Lambda Function URL ─► bot Lambda ─► assistant (Be
                                               └─► Telegram sendMessage (result)
 ```
 
-- **Webhook:** public Function URL guarded by the `X-Telegram-Bot-Api-Secret-Token`
-  header (secret `gym-booker/webhook-secret`).
-- **Enrollment:** anyone can message the bot and becomes `pending`; only the admin
-  (`AdminUserId`) is asked to `/approve <id>` or `/deny <id>`; `/users` lists everyone.
-- **Linking an account:** approved users run `/login`; the message is deleted
-  immediately, the credentials are validated against the gym API and stored in
-  Secrets Manager (`gym-booker/user/<telegram_user_id>`); the association lives in
-  DynamoDB (`bookingscript-users`).
-- **Booking:** `/search <date> <time>`, `/pick <n>`, `/bookings`, `/cancel <id>`.
-  A one-time schedule (Europe/Rome, self-deleting) fires 3 minutes before the
-  window opens; the booker waits for the exact instant (500 ms polling), then
-  books with a retry loop for `TOO_EARLY_TO_BOOK` (90 s budget).
-- **Natural language:** free text from a linked user goes to Amazon Bedrock
-  (Converse API) with four tools: search, schedule, list, cancel. The model
-  must ask for missing details and get an explicit confirmation before booking.
-- **Scope guardrail:** a Bedrock Guardrail is attached to every model call and
-  blocks off-topic requests and requests for secrets or the system prompt.
-- **Reports:** the booker messages the admin on every outcome; a CloudWatch alarm
-  on booker errors publishes to an SNS topic (optional `AlarmEmail`).
+| Piece | Role |
+|---|---|
+| **bot Lambda** (Function URL) | Telegram webhook: auth, enrollment, commands, hands free text to the assistant |
+| **assistant** | Amazon Bedrock Converse with four tools (search, schedule, list, cancel) behind a guardrail |
+| **EventBridge Scheduler** | One-time schedule per booking, fires 3 minutes before the window, deletes itself |
+| **booker Lambda** | Logs in, waits for the exact instant, books, retries, reports |
+| **DynamoDB** | Users, bookings, short conversation history (on-demand billing) |
+| **Secrets Manager** | Bot token, webhook secret, one secret per user's gym credentials |
+| **CloudWatch + SNS** | Alarm when the booker crashes (optional email) |
+
+## Technical choices
+
+| Choice | Why |
+|---|---|
+| **Serverless (Lambda, Scheduler, DynamoDB)** | The workload is a few seconds of work at unpredictable moments. Nothing runs, or bills, between bookings, and there is no server or cron host to keep alive. |
+| **Python 3.12 on arm64 (Graviton)** | The original script was Python, so the proven booking logic carried over, and `boto3` is built into the runtime. arm64 is cheaper and fast enough here. |
+| **Lambda Function URL, no API Gateway** | One webhook endpoint is all that's needed, so there is one less service to configure. Telegram can't sign AWS requests, so the endpoint is public and every request must carry a secret header, checked in code with a constant-time comparison. |
+| **Scheduler fires 3 min early, then the booker waits** | Cold starts, login and scheduler delivery delay are absorbed before the window opens. The booker polls every 500 ms and fires the request at the instant, then retries for up to 90 s on `TOO_EARLY_TO_BOOK`. |
+| **EventBridge Scheduler, not cron or `sleep`** | A schedule per booking, in the Europe/Rome time zone (Lambda runs in UTC), with retries and automatic deletion after it runs. If the window is already open, the booker is invoked immediately instead. |
+| **Webhook acknowledges first, work runs async** | Telegram re-delivers any update that isn't answered with 200, which would duplicate work. The webhook returns at once and the assistant job runs in an asynchronous self-invoke. |
+| **Amazon Bedrock Converse with tool use** | The model only picks a tool and its arguments; the code executes it. It must ask for missing details and get an explicit confirmation before booking. The model id is a deploy parameter, so you can pick any tool-capable model available in your region. |
+| **Bedrock Guardrail (denied topics)** | Keeps the assistant on topic: general knowledge, code, math, creative writing and requests for secrets or the system prompt are blocked. |
+| **Secrets Manager per user, not DynamoDB** | Credentials live apart from application data, with IAM scoped to a secret prefix. The trade-off: Secrets Manager bills per secret. |
+| **Infrastructure as code (AWS SAM)** | One template defines everything, including the guardrail. `sam validate --lint` runs in development. |
+| **Operator CLI (`scripts/manage.py`)** | `doctor`, `deploy`, `status`, `webhook`, `destroy`: a new person can deploy and remove the stack without knowing AWS internals. |
+
+## Engineering approach
+
+- **Test-first (TDD).** Red, green, refactor: tests are written before the
+  behavior they describe. The suite has 153 tests with coverage above 80%.
+- **Fully offline tests.** AWS, Telegram and the gym API are mocked, so the
+  tests need no credentials or network and run in under a second.
+- **Dependency injection.** Handlers receive their collaborators in a small
+  `Deps` dataclass, and time-dependent code takes an injectable `sleep_fn`, so
+  the wait-and-retry logic is tested with a fake clock instead of real sleeps.
+- **Contract tests.** Mocks can't catch a wrong function signature, which once
+  caused a `TypeError` in production. A contract test binds every call the
+  handlers make to the real functions' signatures.
+- **Small, focused modules.** Commands, admin, enrollment, assistant, booking
+  core, stores and clients each live in their own file, none over 300 lines.
+- **Typed, validated boundaries.** The operator CLI validates every input,
+  never echoes secret values in errors, and is itself unit-tested.
+
+## Security model
+
+- Webhook requests need the `X-Telegram-Bot-Api-Secret-Token` header, compared in
+  constant time; anything else gets a 403 before any work happens.
+- **Closed enrollment:** anyone can message the bot, but only the admin can
+  approve them. Unapproved users can't run any booking command.
+- `/login` messages containing a password are deleted from the chat right away;
+  credentials are validated, then stored only in Secrets Manager.
+- Least-privilege IAM: secrets scoped by prefix, schedules scoped to `gym-*`,
+  `iam:PassRole` limited to the scheduler, scheduler role trust restricted to the
+  account. Known broader grant: `bedrock:InvokeModel` is allowed on all
+  resources, because cross-region inference profiles resolve to models in
+  several regions.
+- No secrets in the repository; deploy-time values go in a git-ignored
+  `.env.deploy` and `NoEcho` template parameters.
+
+## Limits and trade-offs
+
+- The booking API is the gym's private app API; it can change or block clients
+  at any time, and its terms may not allow automation. You bring your own API values.
+- Class times and the schedule time zone are fixed to Europe/Rome.
+- The gym API key is a Lambda environment variable, not a secret.
+- The guardrail uses its draft version so edits apply on deploy.
+- One stack per AWS account and region: table, topic and secret names are fixed.
 
 ## Quick start (deploy it yourself)
 
