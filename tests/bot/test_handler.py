@@ -53,6 +53,16 @@ def test_rejects_wrong_webhook_secret(env, deps):
     deps.telegram.send_message.assert_not_called()
 
 
+@pytest.mark.parametrize("headers", [{}, {"x-telegram-bot-api-secret-token": ""},
+                                     {"x-telegram-bot-api-secret-token": "sécret-ünicode"}])
+def test_rejects_missing_empty_or_non_ascii_secret(env, deps, headers):
+    event = {"headers": headers, "body": "{}"}
+    with mock.patch.object(handler, "get_webhook_secret", return_value="s3cret"):
+        resp = handler.process_event(event, deps)
+    assert resp["statusCode"] == 403
+    deps.telegram.send_message.assert_not_called()
+
+
 # --- enrollment ----------------------------------------------------------------
 
 def test_denied_user_is_refused(env, deps):

@@ -13,6 +13,7 @@ Security:
 - /login messages (which contain credentials) are deleted immediately.
 """
 
+import hmac
 import json
 import logging
 import os
@@ -162,7 +163,8 @@ def _dispatch(deps: Deps, message: dict) -> None:
 def process_event(event: dict, deps: Deps) -> dict:
     """Verify the webhook secret, dispatch, always return 200 after auth."""
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
-    if headers.get("x-telegram-bot-api-secret-token") != get_webhook_secret():
+    supplied = headers.get("x-telegram-bot-api-secret-token", "")
+    if not hmac.compare_digest(supplied.encode(), get_webhook_secret().encode()):
         logger.warning("Rejected request with missing/wrong webhook secret header")
         return {"statusCode": 403, "body": "forbidden"}
 
