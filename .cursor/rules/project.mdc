@@ -1,0 +1,12 @@
+---
+description: GymClassBooker project rules
+alwaysApply: true
+---
+
+Read and follow `AGENTS.md` at the repository root: it is the single source of
+truth for layout, commands, test-first workflow, `Deps` dependency injection,
+the contract test, and the hard security rules (no secrets or vendor values in
+the repo, constant-time webhook secret check, least-privilege IAM).
+
+Run `python -m pytest` after every change. Commit messages are one lowercase
+line (`feat: ...`, `fix: ...`).

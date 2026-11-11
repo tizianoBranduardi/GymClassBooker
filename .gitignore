@@ -23,6 +23,10 @@ samconfig.yaml
 # Captured API traffic contains real tokens and credentials
 *.har
 
+# Personal agent overrides
+CLAUDE.local.md
+.claude/settings.local.json
+
 # Editor / OS
 .vscode/
 .idea/
